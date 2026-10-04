@@ -2,7 +2,18 @@
 
 Prueba de concepto de una compra distribuida en **cuatro microservicios REST**. **Saga** coordina Order → Payment → Inventory → Shipping y compensa operaciones si falla un paso. Dos **Circuit Breakers** independientes protegen el cobro y la programación de envío ante fallos técnicos repetidos.
 
-## Arquitectura y requisitos
+## Video del POC
+
+[Ver la demostración de POC05 en video](https://drive.google.com/file/d/1UlCsT4Eh_d7Os-Y3f6eoY7t8h_39Ek_t/view?usp=sharing)
+
+
+## Guía de demostración
+
+[Consultar la guía de demostración del POC (PDF)](docs/POC05_Guia_Saga_CircuitBreaker_GoogleDocs.docx.pdf)
+
+## Arquitectura
+
+![Arquitectura de microservicios de POC05](docs/diagram.jpeg)
 
 | Servicio | Puerto | PostgreSQL | Responsabilidad |
 | --- | --- | --- | --- |
@@ -13,7 +24,11 @@ Prueba de concepto de una compra distribuida en **cuatro microservicios REST**. 
 
 Cada servicio tiene **su propio módulo Go**, proceso, base y API HTTP/JSON. No existen consultas SQL entre servicios: se comunican mediante REST.
 
-**Requisitos:** Go **1.26.5** (declarado en los .mod), PostgreSQL, `psql` o DataGrip y puertos 8080–8083 libres. Librerías: `pgx/v5 v5.11.0` (los cuatro servicios) y `failsafe-go v0.9.8` (solo Order). La aplicación no requiere Docker, mensajería ni frontend.
+## Tecnologías y prerrequisitos
+
+**Stack:** Go **1.26.5** (declarado en los archivos `go.mod`), PostgreSQL, `pgx/v5 v5.11.0` (los cuatro servicios) y `failsafe-go v0.9.8` (solo Order).
+
+**Para ejecutarlo:** PostgreSQL local, `psql` o DataGrip y puertos `8080` a `8083` libres. La aplicación no requiere Docker, mensajería ni frontend.
 
 ## Preparar bases de datos
 
@@ -93,13 +108,13 @@ SELECT id, order_id, status FROM shipments ORDER BY id DESC LIMIT 20;
 | S3 Payment fallido | `PUT :8081/demo/failure` ON → `POST :8080/orders` → OFF | Orders, Payments, Inventory | `503`, orden cancelada, sin nuevo cobro |
 | S4 Shipping fallido | `PUT :8083/demo/failure` ON → `POST :8080/orders` → OFF | Las cuatro | `503`, pago `REFUNDED`, reserva `RELEASED`, stock restaurado |
 
-Para enviar compras por Terminal:
+Para enviar compras desde la terminal:
 
 ```bash
 curl -i -X POST http://127.0.0.1:8080/orders -H 'Content-Type: application/json' -d '{"sku":"SKU-001","quantity":2}'
 ```
 
-Cambiar `quantity` de acuerdo al escenario que se quiera. Para activar/desactivar fallas:
+Cambiar `quantity` según el escenario que se quiera. Para activar/desactivar fallas:
 
 ```bash
 curl -sS -X PUT http://127.0.0.1:8081/demo/failure -H 'Content-Type: application/json' -d '{"enabled":true}'
@@ -116,15 +131,25 @@ Para **cada** batería, primero desactivar ambos fallos y **reiniciar solo Order
 | C2 | Activar `PUT /demo/failure`, enviar **5 compras fallidas** y **de inmediato una sexta** | Cinco `503 ..._unavailable`, después `503 ..._circuit_open`; breaker `open`, `executions=10`, `failures=5`. La sexta no contacta la dependencia protegida |
 | C3 | Desactivar fallo, esperar **11 s**, enviar **3 compras válidas** consultando diagnóstico entre ellas | Primera/segunda `half-open` (1/3, 2/3), tercera `closed`; tres nuevas compras completadas |
 
-**En Shipping Open:** se realizan cobro y reserva antes del rechazo, por lo que se ejecutan `Refund` y `Release`. VSe ve en DataGrip `REFUNDED`, `RELEASED` y stock sin pérdida. **En Payment Open:** no se crea cobro; la orden se cancela. Los estados del breaker están en **memoria**, no en PostgreSQL. Los logs de Order también muestran sus transiciones.
+**En Shipping Open:** se realizan cobro y reserva antes del rechazo, por lo que se ejecutan `Refund` y `Release`. Se ve en DataGrip `REFUNDED`, `RELEASED` y stock sin pérdida. **En Payment Open:** no se crea cobro; la orden se cancela. Los estados del breaker están en **memoria**, no en PostgreSQL. Los logs de Order también muestran sus transiciones.
 
 **No detenerse entre la quinta falla y la sexta petición**: el estado Open dura 10 s. Si se espera, esa llamada podría pasar a Half-Open y dejar de demostrar el rechazo Open.
 
-**Colección importable:** [`postman/POC05_Saga_CircuitBreaker.postman_collection.json`](postman/POC05_Saga_CircuitBreaker.postman_collection.json), con carpetas ordenadas por patrón. En Postman, las solicitudes «ENVIAR 5 VECES» se envían cinco veces manualmente.
+**Colección importable:** [Abrir colección de Postman](postman/postman_collection.json), con carpetas ordenadas por patrón. En Postman, las solicitudes «ENVIAR 5 VECES» se envían cinco veces manualmente.
+
+## Reiniciar datos para una nueva demostración
+
+Con las **cuatro APIs detenidas**, ejecutar desde la raíz del repositorio:
+
+```bash
+bash POC05_Reset_Demo.sh
+```
+
+Confirmar escribiendo `REINICIAR`. El script **elimina los datos de prueba** de las cuatro bases `poc05_*`, reinicia los IDs y restaura `SKU-001` con **100 unidades**, sin eliminar las tablas. Después, levantar nuevamente los cuatro servicios; los Circuit Breakers se reinician al arrancar Order.
 
 ## Restablecimiento manual (solo bases de demostración)
 
-**Opcional:** para reiniciar a stock 100 y tablas vacías, detener primero los cuatro servicios; Estos comandos **eliminan registros anteriores** y no se ejecutan automáticamente:
+**Opcional:** para reiniciar a stock 100 y tablas vacías, detener primero los cuatro servicios; estos comandos **eliminan registros anteriores** y no se ejecutan automáticamente:
 
 ```bash
 psql -h 127.0.0.1 -U postgres -d poc05_orders -c 'TRUNCATE TABLE orders RESTART IDENTITY;'
@@ -135,7 +160,7 @@ psql -h 127.0.0.1 -U postgres -d poc05_shipping -c 'TRUNCATE TABLE shipments RES
 
 Iniciar otra vez los cuatro procesos reinicia el estado en memoria de los breakers y las banderas demo.
 
-## Pruebas y límites
+## Pruebas y build
 
 ```bash
 for service in order payment inventory shipping; do
@@ -148,5 +173,7 @@ Para ejecutar el test de integración de Inventory sin usar caché:
 ```bash
 (cd services/inventory && INVENTORY_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:5432/poc05_inventory?sslmode=disable' go test ./internal/inventory -run TestPostgresReserveReleaseAtomicity -count=1 -v)
 ```
+
+## Limitaciones deliberadas
 
 Se emplean cobros simulados y compensaciones locales. No se incluyen mensajería, reintentos automáticos, coordinación ACID global ni recuperación de resultados remotos inciertos.
